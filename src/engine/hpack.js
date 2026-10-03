@@ -158,15 +158,25 @@ class DynamicTable {
     return copy;
   }
 
-  // 驱逐最旧条目直到 size <= target；驱逐记录按发生顺序追加到 events
-  evictTo(target, events, cause) {
+  // 驱逐最旧条目直到 size <= target；驱逐记录按发生顺序追加到 events。
+  // 记录必须携带驱逐发生瞬间的实际动态索引（最旧条目 = 61 + 当前存活条目数）、
+  // 完整字段值与名称/值的原始字节（hex）及 UTF-8 有效性，保证审计可还原被驱逐条目。
+  evictTo(target, events, cause, offset) {
     while (this.size > target) {
       const oldest = this.entries[this.entries.length - 1];
+      const n = utf8Info(oldest.nameBytes);
+      const v = utf8Info(oldest.valueBytes);
       events.push({
         type: 'eviction',
         cause,
-        index: STATIC_COUNT + oldest.seq,
+        offset, // 触发本次驱逐的插入/容量更新在块内的字节偏移
+        index: STATIC_COUNT + this.entries.length, // 驱逐瞬间的实际动态索引
         name: oldest.name,
+        value: oldest.value,
+        nameHex: n.hex,
+        valueHex: v.hex,
+        nameUtf8Valid: n.valid,
+        valueUtf8Valid: v.valid,
         entrySize: oldest.size,
       });
       this.size -= oldest.size;
@@ -178,7 +188,7 @@ class DynamicTable {
     const from = this.sizeLimit;
     this.sizeLimit = newLimit;
     if (this.size > newLimit) {
-      this.evictTo(newLimit, events, 'resize');
+      this.evictTo(newLimit, events, 'resize', offset);
     }
     events.push({ type: 'resize', offset, from, to: newLimit });
   }
@@ -198,7 +208,7 @@ class DynamicTable {
     }
 
     this.insertCount += 1;
-    this.evictTo(this.sizeLimit - entrySize, events, 'insert');
+    this.evictTo(this.sizeLimit - entrySize, events, 'insert', offset);
     const entry = {
       seq: this.insertCount,
       nameBytes: name,
@@ -209,12 +219,18 @@ class DynamicTable {
     };
     this.entries.unshift(entry);
     this.size += entrySize;
+    const n = utf8Info(name);
+    const v = utf8Info(value);
     events.push({
       type: 'insert',
       offset,
       index: STATIC_COUNT + 1, // 插入后占据动态表最新位置（索引 62）
       name: entry.name,
       value: entry.value,
+      nameHex: n.hex,
+      valueHex: v.hex,
+      nameUtf8Valid: n.valid,
+      valueUtf8Valid: v.valid,
       entrySize,
     });
     return entry;
@@ -405,13 +421,23 @@ function buildSnapshot(table) {
     maxSize: table.sizeLimit,
     size: table.size,
     insertCount: table.insertCount,
-    entries: table.entries.map((e, i) => ({
-      index: STATIC_COUNT + 1 + i,
-      name: e.name,
-      value: e.value,
-      entrySize: e.size,
-      insertedAs: STATIC_COUNT + e.seq,
-    })),
+    // 快照条目保留名称/值的原始字节（hex）与 UTF-8 有效性：
+    // 非 UTF-8 值在文本层都显示为替换字符，必须靠 hex 才能审计区分。
+    entries: table.entries.map((e, i) => {
+      const n = utf8Info(e.nameBytes);
+      const v = utf8Info(e.valueBytes);
+      return {
+        index: STATIC_COUNT + 1 + i,
+        name: e.name,
+        value: e.value,
+        nameHex: n.hex,
+        valueHex: v.hex,
+        nameUtf8Valid: n.valid,
+        valueUtf8Valid: v.valid,
+        entrySize: e.size,
+        insertedAs: STATIC_COUNT + e.seq,
+      };
+    }),
   };
 }
 

@@ -282,6 +282,86 @@ test('容量调小立即驱逐最旧条目并记录 resize/eviction', () => {
   assert.ok(events.some((e) => e.type === 'eviction'));
 });
 
+// --- 审计回归：驱逐记录与快照必须可区分、可还原 ----------------------------------
+test('回归：容量 68 连续三段增量解码，驱逐记录报告实际索引 #63 并携带值与原始字节', () => {
+  const sd = new SegmentedDecoder(68);
+  sd.addBlock(hex('40 01 78 01 61')); // x:a（34B）→ #62
+  const r2 = sd.addBlock(hex('40 01 78 01 62')); // x:b（34B）→ #62，x:a 移至 #63
+
+  // 处理第三项前的表状态：x:b 在 #62，较旧的 x:a 在 #63
+  assert.deepEqual(
+    r2.snapshot.entries.map((e) => [e.index, e.name, e.value]),
+    [
+      [62, 'x', 'b'],
+      [63, 'x', 'a'],
+    ]
+  );
+
+  const r3 = sd.addBlock(hex('40 01 78 01 63')); // 插入 x:c（34B）→ 驱逐 x:a
+  const ev = r3.events.find((e) => e.type === 'eviction');
+  assert.ok(ev, '插入 x:c 必须触发一次驱逐');
+  assert.equal(ev.cause, 'insert');
+  assert.equal(ev.offset, 0); // 由块内偏移 0 的增量字段触发
+  assert.equal(ev.index, 63); // 驱逐发生瞬间的实际动态索引（修复前误报为 #62）
+  assert.equal(ev.name, 'x');
+  assert.equal(ev.value, 'a'); // 完整字段值：被驱逐的是 x:a，而非 #62 的 x:b
+  assert.equal(ev.nameHex, '78'); // 原始字节表示
+  assert.equal(ev.valueHex, '61');
+  assert.equal(ev.nameUtf8Valid, true);
+  assert.equal(ev.valueUtf8Valid, true);
+  assert.equal(ev.entrySize, 34);
+
+  // 段末快照：x:c 占据 #62，x:b 移至 #63，x:a 已离场
+  assert.deepEqual(
+    r3.snapshot.entries.map((e) => [e.index, e.value]),
+    [
+      [62, 'c'],
+      [63, 'b'],
+    ]
+  );
+});
+
+test('回归：两个非 UTF-8 原始值（0x80/0x81）在第二段快照中可按 hex 明确区分', () => {
+  const sd = new SegmentedDecoder(4096);
+  sd.addBlock(hex('40 01 78 01 80')); // x: <0x80>
+  const r2 = sd.addBlock(hex('40 01 78 01 81')); // x: <0x81>
+
+  // 文本层两个值都只能是替换字符 U+FFFD —— 快照必须携带 hex 与 UTF-8 有效性
+  const [newer, older] = r2.snapshot.entries;
+  assert.equal(r2.snapshot.entries.length, 2);
+  assert.equal(newer.value, '�');
+  assert.equal(older.value, '�');
+
+  assert.equal(newer.index, 62);
+  assert.equal(newer.nameHex, '78');
+  assert.equal(newer.valueHex, '81');
+  assert.equal(newer.valueUtf8Valid, false);
+  assert.equal(older.index, 63);
+  assert.equal(older.nameHex, '78');
+  assert.equal(older.valueHex, '80');
+  assert.equal(older.valueUtf8Valid, false);
+  assert.notEqual(newer.valueHex, older.valueHex, '两个不同原始值在快照中必须可区分');
+
+  // 插入事件同样携带原始字节证据
+  const ins = r2.events.find((e) => e.type === 'insert');
+  assert.equal(ins.valueHex, '81');
+  assert.equal(ins.valueUtf8Valid, false);
+});
+
+test('回归：被驱逐的非 UTF-8 条目在驱逐记录中保留完整值与原始字节', () => {
+  const sd = new SegmentedDecoder(34); // 容量恰容纳一个 34B 条目
+  sd.addBlock(hex('40 01 78 01 80')); // x: <0x80> → #62
+  const r2 = sd.addBlock(hex('40 01 78 01 81')); // x: <0x81> → 驱逐前者
+  const ev = r2.events.find((e) => e.type === 'eviction');
+  assert.ok(ev, '第二项插入必须驱逐第一项');
+  assert.equal(ev.index, 62); // 表中唯一条目，驱逐时位于 #62
+  assert.equal(ev.valueHex, '80'); // 被驱逐的是 0x80 一项，可与新插入的 0x81 区分
+  assert.equal(ev.valueUtf8Valid, false);
+  assert.equal(ev.nameHex, '78');
+  assert.equal(r2.snapshot.entries.length, 1);
+  assert.equal(r2.snapshot.entries[0].valueHex, '81');
+});
+
 // --- 不索引 / 绝不索引 -----------------------------------------------------------
 test('不索引(0000)与绝不索引(0001)字面量不入表', () => {
   const table = new DynamicTable(4096);

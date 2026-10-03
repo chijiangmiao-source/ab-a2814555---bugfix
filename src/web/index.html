@@ -61,6 +61,7 @@
   th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--dim); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; }
   td.mono, .mono { font-family: var(--mono); word-break: break-all; }
+  .hex { color: var(--dim); font-size: 11px; }
   .pill { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 20px; border: 1px solid var(--line); color: var(--dim); }
   .pill.static { color: #9fc4ff; } .pill.dynamic { color: #7fe3c0; } .pill.literal { color: #e0c08a; }
   .pill.kind-indexed { color: #b5c7ff; } .pill.kind-incremental { color: var(--ok); }
@@ -177,9 +178,19 @@ function huffPill(v) {
 
 function cellWithHex(text, hex, validUtf8) {
   const warn = validUtf8 === false
-    ? ' <span class="pill huff" title="原始字节不是合法 UTF-8，以下文本为替换显示；hex: ' + esc(hex) + '">⚠ 非UTF-8</span>'
+    ? ' <span class="pill huff" title="原始字节不是合法 UTF-8，文本为替换显示">⚠ 非UTF-8</span>' +
+      ' <span class="mono hex">0x' + esc(hex) + '</span>'
     : '';
   return '<td class="mono">' + esc(text) + warn + '</td>';
+}
+
+// 名称/值原始字节（hex）审计附注：非 UTF-8 值文本层都是替换字符，只能靠 hex 区分
+function hexPair(nameHex, valueHex) {
+  return '<span class="mono hex">名 0x' + esc(nameHex) + ' · 值 0x' + esc(valueHex) + '</span>';
+}
+function utf8Warn(nameValid, valueValid) {
+  return (nameValid === false || valueValid === false)
+    ? ' <span class="pill huff">⚠ 非UTF-8</span>' : '';
 }
 
 function renderFields(fields) {
@@ -203,10 +214,14 @@ function renderEvents(events) {
   return '<ul class="events" style="padding-left:18px;margin:6px 0">' + events.map((e) => {
     if (e.type === 'insert')
       return '<li class="ev-insert">⬆ 插入 @0x' + e.offset.toString(16) + ' → 动态表#' + e.index +
-        ' · <b>' + esc(e.name) + '</b>: ' + esc(e.value) + ' (' + e.entrySize + ' B)</li>';
+        ' · <b>' + esc(e.name) + '</b>: ' + esc(e.value) + ' (' + e.entrySize + ' B) ' +
+        hexPair(e.nameHex, e.valueHex) + utf8Warn(e.nameUtf8Valid, e.valueUtf8Valid) + '</li>';
     if (e.type === 'eviction')
-      return '<li class="ev-evict">␡ 驱逐（' + (e.cause === 'resize' ? '容量收缩' : '为新条目腾位') +
-        '）动态表#' + e.index + ' · ' + esc(e.name) + ' (' + e.entrySize + ' B)</li>';
+      return '<li class="ev-evict">␡ 驱逐' + (e.offset !== undefined ? ' @0x' + e.offset.toString(16) : '') +
+        '（' + (e.cause === 'resize' ? '容量收缩' : '为新条目腾位') +
+        '）动态表#' + e.index + ' · <b>' + esc(e.name) + '</b>: ' + esc(e.value) +
+        ' (' + e.entrySize + ' B) ' + hexPair(e.nameHex, e.valueHex) +
+        utf8Warn(e.nameUtf8Valid, e.valueUtf8Valid) + '</li>';
     return '<li class="ev-resize">⚙ 容量更新 @0x' + e.offset.toString(16) + '：' + e.from + ' → ' + e.to + ' B</li>';
   }).join('') + '</ul>';
 }
@@ -216,10 +231,16 @@ function renderSnapshot(snap) {
     '</span> B · 当前占用 <span class="mono">' + snap.size + '</span> B · 累计插入 <span class="mono">' +
     snap.insertCount + '</span> · 存活条目 <span class="mono">' + snap.entries.length + '</span></div>';
   if (!snap.entries.length) return head + '<div class="empty">（动态表为空）</div>';
-  let html = head + '<table><thead><tr><th>索引</th><th>字段名</th><th>字段值</th><th>尺寸</th></tr></thead><tbody>';
+  let html = head + '<table><thead><tr><th>索引</th><th>字段名</th><th>字段值</th>' +
+    '<th>原始字节 (hex)</th><th>UTF-8</th><th>尺寸</th></tr></thead><tbody>';
   for (const e of snap.entries) {
     html += '<tr><td class="mono">#' + e.index + '</td><td class="mono">' + esc(e.name) +
-      '</td><td class="mono">' + esc(e.value) + '</td><td>' + e.entrySize + ' B</td></tr>';
+      '</td><td class="mono">' + esc(e.value) + '</td>' +
+      '<td>' + hexPair(e.nameHex, e.valueHex) + '</td>' +
+      '<td>' + (e.nameUtf8Valid === false || e.valueUtf8Valid === false
+        ? '<span class="pill huff">⚠ 非UTF-8</span>'
+        : '<span class="pill">✓ 有效</span>') + '</td>' +
+      '<td>' + e.entrySize + ' B</td></tr>';
   }
   return html + '</tbody></table>';
 }
