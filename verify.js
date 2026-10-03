@@ -86,6 +86,8 @@ async function main() {
   check('含清空草稿和结论按钮', /btnClearAll/.test(html));
   check('含字段/来源/插入驱逐/快照渲染逻辑',
     /renderFields/.test(html) && /renderEvents/.test(html) && /renderSnapshot/.test(html));
+  check('页面事件/快照/结论渲染携带 hex 与 UTF-8 有效性证据',
+    /nameHex/.test(html) && /valueHex/.test(html) && /非UTF-8/.test(html));
   check('错误展示含块内字节偏移', /段内字节偏移/.test(html) && /offsetHex/.test(html));
   // 关键 JS 不能有明显语法错误：提取最后一个 <script> 块用 new Function 解析
   const scriptBody = html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</' + 'script>'));
@@ -183,6 +185,58 @@ async function main() {
     check('冒烟后健康路径仍 200', hz2.status === 200);
     const unknown = await request(base, 'GET', '/nope');
     check('未知路径 → 404 JSON', unknown.status === 404);
+
+    // 3g. 审计可辨识性主线一：容量 68 连续三段 x:a/x:b/x:c（各 34 B），
+    //     第三段插入 x:c 驱逐 x:a —— 驱逐记录须给出实际动态索引 #63 与完整值/hex
+    const b64 = (...bytes) => Buffer.from(bytes).toString('base64');
+    const evict = await request(base, 'POST', '/api/decode', {
+      capacity: 68,
+      segments: [
+        b64(0x40, 0x01, 0x78, 0x01, 0x61), // x:a
+        b64(0x40, 0x01, 0x78, 0x01, 0x62), // x:b
+        b64(0x40, 0x01, 0x78, 0x01, 0x63), // x:c → 驱逐 x:a
+      ],
+    });
+    check('容量 68 三段连续解码 → 200', evict.status === 200, `实际 ${evict.status}`);
+    const evictJson = JSON.parse(evict.raw);
+    const evictEv = evictJson.results && evictJson.results[2] &&
+      evictJson.results[2].events.find((e) => e.type === 'eviction');
+    check('驱逐记录给出驱逐发生时的实际动态索引 #63',
+      !!evictEv && evictEv.index === 63,
+      evictEv ? `实际 index=${evictEv.index}` : '缺少驱逐记录');
+    check('驱逐记录携带完整字段值与原始字节 hex（x: a / 名 0x78 / 值 0x61）',
+      !!evictEv && evictEv.name === 'x' && evictEv.value === 'a' &&
+      evictEv.nameHex === '78' && evictEv.valueHex === '61' && evictEv.entrySize === 34);
+    const evictSnap = evictJson.results && evictJson.results[2] && evictJson.results[2].snapshot;
+    check('第三段快照：x:c 在 #62、x:b 在 #63，条目均带 hex 证据',
+      !!evictSnap && evictSnap.entries.length === 2 &&
+      evictSnap.entries[0].index === 62 && evictSnap.entries[0].value === 'c' &&
+      evictSnap.entries[0].valueHex === '63' &&
+      evictSnap.entries[1].index === 63 && evictSnap.entries[1].value === 'b' &&
+      evictSnap.entries[1].valueHex === '62');
+
+    // 3h. 审计可辨识性主线二：同名字段原始值 0x80 与 0x81（均非 UTF-8），
+    //     第二段快照与成功结论须能以 hex 明确区分，不得混为同一替换字符
+    const bin = await request(base, 'POST', '/api/decode', {
+      capacity: 4096,
+      segments: [
+        b64(0x40, 0x01, 0x78, 0x01, 0x80), // x: <0x80>
+        b64(0x40, 0x01, 0x78, 0x01, 0x81), // x: <0x81>
+      ],
+    });
+    check('非 UTF-8 双段连续解码 → 200', bin.status === 200, `实际 ${bin.status}`);
+    const binJson = JSON.parse(bin.raw);
+    const binSnap = binJson.results && binJson.results[1] && binJson.results[1].snapshot;
+    check('第二段快照以 hex 区分 0x80 与 0x81 且标注 UTF-8 无效',
+      !!binSnap && binSnap.entries.length === 2 &&
+      binSnap.entries[0].valueHex === '81' && binSnap.entries[1].valueHex === '80' &&
+      binSnap.entries[0].valueUtf8Valid === false && binSnap.entries[1].valueUtf8Valid === false);
+    check('成功结论字段清单同样携带可区分的 hex 证据',
+      !!binJson.conclusion && binJson.conclusion.allFields.length === 2 &&
+      binJson.conclusion.allFields[0].valueHex === '80' &&
+      binJson.conclusion.allFields[1].valueHex === '81' &&
+      binJson.conclusion.allFields[0].valueUtf8Valid === false &&
+      binJson.conclusion.allFields[1].valueUtf8Valid === false);
   } finally {
     if (server) await new Promise((r) => server.close(r));
   }

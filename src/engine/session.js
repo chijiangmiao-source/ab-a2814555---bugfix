@@ -72,6 +72,8 @@ class SegmentedDecoder {
           value: f.value,
           nameHex: f.nameHex,
           valueHex: f.valueHex,
+          nameUtf8Valid: f.nameUtf8Valid,
+          valueUtf8Valid: f.valueUtf8Valid,
         });
       }
     }

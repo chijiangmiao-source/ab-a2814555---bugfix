@@ -158,15 +158,23 @@ class DynamicTable {
     return copy;
   }
 
-  // 驱逐最旧条目直到 size <= target；驱逐记录按发生顺序追加到 events
+  // 驱逐最旧条目直到 size <= target；驱逐记录按发生顺序追加到 events。
+  // 记录驱逐发生那一刻的实际动态索引（最旧条目位于 entries 末尾，
+  // 索引 = 61 + 当前条目数），并携带完整名称/值及其原始字节 hex 与
+  // UTF-8 有效性，保证审查员能还原“实际离开的是哪一项”。
   evictTo(target, events, cause) {
     while (this.size > target) {
       const oldest = this.entries[this.entries.length - 1];
       events.push({
         type: 'eviction',
         cause,
-        index: STATIC_COUNT + oldest.seq,
+        index: STATIC_COUNT + this.entries.length,
         name: oldest.name,
+        value: oldest.value,
+        nameHex: oldest.nameHex,
+        valueHex: oldest.valueHex,
+        nameUtf8Valid: oldest.nameUtf8Valid,
+        valueUtf8Valid: oldest.valueUtf8Valid,
         entrySize: oldest.size,
       });
       this.size -= oldest.size;
@@ -199,12 +207,18 @@ class DynamicTable {
 
     this.insertCount += 1;
     this.evictTo(this.sizeLimit - entrySize, events, 'insert');
+    const n = utf8Info(name);
+    const v = utf8Info(value);
     const entry = {
       seq: this.insertCount,
       nameBytes: name,
       valueBytes: value,
-      name: name.toString('utf8'),
-      value: value.toString('utf8'),
+      name: n.text,
+      value: v.text,
+      nameHex: n.hex,
+      valueHex: v.hex,
+      nameUtf8Valid: n.valid,
+      valueUtf8Valid: v.valid,
       size: entrySize,
     };
     this.entries.unshift(entry);
@@ -215,6 +229,10 @@ class DynamicTable {
       index: STATIC_COUNT + 1, // 插入后占据动态表最新位置（索引 62）
       name: entry.name,
       value: entry.value,
+      nameHex: entry.nameHex,
+      valueHex: entry.valueHex,
+      nameUtf8Valid: entry.nameUtf8Valid,
+      valueUtf8Valid: entry.valueUtf8Valid,
       entrySize,
     });
     return entry;
@@ -405,10 +423,16 @@ function buildSnapshot(table) {
     maxSize: table.sizeLimit,
     size: table.size,
     insertCount: table.insertCount,
+    // 快照保留名称/值的原始字节 hex 与 UTF-8 有效性：
+    // 非 UTF-8 值（如 0x80 与 0x81）替换显示相同，必须靠 hex 证据区分
     entries: table.entries.map((e, i) => ({
       index: STATIC_COUNT + 1 + i,
       name: e.name,
       value: e.value,
+      nameHex: e.nameHex,
+      valueHex: e.valueHex,
+      nameUtf8Valid: e.nameUtf8Valid,
+      valueUtf8Valid: e.valueUtf8Valid,
       entrySize: e.size,
       insertedAs: STATIC_COUNT + e.seq,
     })),

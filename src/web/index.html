@@ -61,6 +61,7 @@
   th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--dim); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; }
   td.mono, .mono { font-family: var(--mono); word-break: break-all; }
+  .hexline { color: var(--dim); font-size: 11px; }
   .pill { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 20px; border: 1px solid var(--line); color: var(--dim); }
   .pill.static { color: #9fc4ff; } .pill.dynamic { color: #7fe3c0; } .pill.literal { color: #e0c08a; }
   .pill.kind-indexed { color: #b5c7ff; } .pill.kind-incremental { color: var(--ok); }
@@ -177,9 +178,22 @@ function huffPill(v) {
 
 function cellWithHex(text, hex, validUtf8) {
   const warn = validUtf8 === false
-    ? ' <span class="pill huff" title="原始字节不是合法 UTF-8，以下文本为替换显示；hex: ' + esc(hex) + '">⚠ 非UTF-8</span>'
+    ? ' <span class="pill huff" title="原始字节不是合法 UTF-8，文本为替换显示，请以 hex 为准">⚠ 非UTF-8</span>'
     : '';
-  return '<td class="mono">' + esc(text) + warn + '</td>';
+  // 始终展示原始字节 hex：非 UTF-8 值（如 0x80/0x81）替换显示相同，hex 是可审计的区分证据
+  const hexLine = hex !== undefined && hex !== null
+    ? '<br><span class="hexline">0x' + esc(hex) + '</span>' : '';
+  return '<td class="mono">' + esc(text) + warn + hexLine + '</td>';
+}
+
+// 事件行内联的 hex 证据（插入/驱逐记录均携带名称与值的原始字节）
+function evHex(e) {
+  let s = '';
+  if (e.nameHex !== undefined && e.nameHex !== null) s += ' · 名 0x' + esc(e.nameHex);
+  if (e.valueHex !== undefined && e.valueHex !== null) s += ' · 值 0x' + esc(e.valueHex);
+  if (e.nameUtf8Valid === false || e.valueUtf8Valid === false)
+    s += ' <span class="pill huff">⚠ 非UTF-8</span>';
+  return s;
 }
 
 function renderFields(fields) {
@@ -203,10 +217,11 @@ function renderEvents(events) {
   return '<ul class="events" style="padding-left:18px;margin:6px 0">' + events.map((e) => {
     if (e.type === 'insert')
       return '<li class="ev-insert">⬆ 插入 @0x' + e.offset.toString(16) + ' → 动态表#' + e.index +
-        ' · <b>' + esc(e.name) + '</b>: ' + esc(e.value) + ' (' + e.entrySize + ' B)</li>';
+        ' · <b>' + esc(e.name) + '</b>: ' + esc(e.value) + ' (' + e.entrySize + ' B)' + evHex(e) + '</li>';
     if (e.type === 'eviction')
       return '<li class="ev-evict">␡ 驱逐（' + (e.cause === 'resize' ? '容量收缩' : '为新条目腾位') +
-        '）动态表#' + e.index + ' · ' + esc(e.name) + ' (' + e.entrySize + ' B)</li>';
+        '）动态表#' + e.index + ' · <b>' + esc(e.name) + '</b>: ' + esc(e.value) +
+        ' (' + e.entrySize + ' B)' + evHex(e) + '</li>';
     return '<li class="ev-resize">⚙ 容量更新 @0x' + e.offset.toString(16) + '：' + e.from + ' → ' + e.to + ' B</li>';
   }).join('') + '</ul>';
 }
@@ -218,8 +233,10 @@ function renderSnapshot(snap) {
   if (!snap.entries.length) return head + '<div class="empty">（动态表为空）</div>';
   let html = head + '<table><thead><tr><th>索引</th><th>字段名</th><th>字段值</th><th>尺寸</th></tr></thead><tbody>';
   for (const e of snap.entries) {
-    html += '<tr><td class="mono">#' + e.index + '</td><td class="mono">' + esc(e.name) +
-      '</td><td class="mono">' + esc(e.value) + '</td><td>' + e.entrySize + ' B</td></tr>';
+    html += '<tr><td class="mono">#' + e.index + '</td>' +
+      cellWithHex(e.name, e.nameHex, e.nameUtf8Valid) +
+      cellWithHex(e.value, e.valueHex, e.valueUtf8Valid) +
+      '<td>' + e.entrySize + ' B</td></tr>';
   }
   return html + '</tbody></table>';
 }
@@ -280,8 +297,9 @@ document.getElementById('btnDecode').addEventListener('click', async () => {
   const c = data.conclusion;
   $status.innerHTML = '<div class="alert ok">✅ 全部 ' + data.results.length + ' 段连续解码成功，压缩上下文跨段一致，结论有效。</div>';
   let rows = c.allFields.map((f) =>
-    '<tr><td>第 ' + f.block + ' 段</td><td class="mono">0x' + f.offset.toString(16) +
-    '</td><td class="mono">' + esc(f.name) + '</td><td class="mono">' + esc(f.value) + '</td></tr>').join('');
+    '<tr><td>第 ' + f.block + ' 段</td><td class="mono">0x' + f.offset.toString(16) + '</td>' +
+    cellWithHex(f.name, f.nameHex, f.nameUtf8Valid) +
+    cellWithHex(f.value, f.valueHex, f.valueUtf8Valid) + '</tr>').join('');
   if (!rows) rows = '<tr><td colspan="4" class="empty">所有段均为空块，无还原字段</td></tr>';
   $concl.innerHTML = '<section class="panel"><h2>② 成功结论（全部段字段按接收顺序还原）</h2>' +
     '<div class="concl-grid"><span>成功段数：<b>' + c.blocks + '</b></span>' +

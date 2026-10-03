@@ -434,3 +434,65 @@ test('Huffman：空 Huffman 串合法（编码后 0 字节）', () => {
   assert.equal(r.fields[0].name, '');
   assert.equal(r.fields[0].value, '');
 });
+
+// --- 审计可辨识性回归：驱逐证据与非 UTF-8 值区分 --------------------------------
+test('审计：容量 68 连续三段，驱逐记录给出实际动态索引 #63 与完整值/hex 证据', () => {
+  const sd = new SegmentedDecoder(68);
+  // 三个增量索引字段 x:a / x:b / x:c，每项 32+1+1 = 34 字节
+  sd.addBlock(hex('40 01 78 01 61')); // x:a → #62
+  sd.addBlock(hex('40 01 78 01 62')); // x:b → #62，x:a 移至 #63
+  const r3 = sd.addBlock(hex('40 01 78 01 63')); // 插入 x:c，为腾位驱逐 x:a
+
+  const ev = r3.events.find((e) => e.type === 'eviction');
+  assert.ok(ev, '应有驱逐记录');
+  assert.equal(ev.cause, 'insert');
+  // 关键：驱逐发生那一刻 x:a 的实际动态索引是 #63（不是插入时的 #62）
+  assert.equal(ev.index, 63);
+  assert.equal(ev.name, 'x');
+  assert.equal(ev.value, 'a', '驱逐记录必须携带被驱逐字段的完整值');
+  assert.equal(ev.nameHex, '78');
+  assert.equal(ev.valueHex, '61');
+  assert.equal(ev.nameUtf8Valid, true);
+  assert.equal(ev.valueUtf8Valid, true);
+  assert.equal(ev.entrySize, 34);
+
+  const ins = r3.events.find((e) => e.type === 'insert');
+  assert.ok(ins, '应有插入记录');
+  assert.equal(ins.index, 62);
+  assert.equal(ins.valueHex, '63');
+
+  // 段末快照：x:c 占据 #62，x:b 在 #63，x:a 已离场
+  assert.deepEqual(
+    r3.snapshot.entries.map((e) => [e.index, e.name, e.value]),
+    [
+      [62, 'x', 'c'],
+      [63, 'x', 'b'],
+    ]
+  );
+  assert.equal(r3.snapshot.size, 68);
+  assert.equal(r3.snapshot.maxSize, 68);
+});
+
+test('审计：同名非 UTF-8 值 0x80/0x81 在第二段快照中可按 hex 与 UTF-8 有效性区分', () => {
+  const sd = new SegmentedDecoder(4096);
+  sd.addBlock(hex('40 01 78 01 80')); // x: <0x80>
+  const r2 = sd.addBlock(hex('40 01 78 01 81')); // x: <0x81>
+
+  const [newer, older] = r2.snapshot.entries;
+  // 两者的 UTF-8 替换显示相同（U+FFFD）——正是必须保留 hex 证据的原因
+  assert.equal(newer.value, older.value);
+  assert.equal(newer.valueHex, '81');
+  assert.equal(older.valueHex, '80');
+  assert.notEqual(newer.valueHex, older.valueHex);
+  assert.equal(newer.valueUtf8Valid, false);
+  assert.equal(older.valueUtf8Valid, false);
+  assert.equal(newer.nameHex, '78');
+  assert.equal(newer.nameUtf8Valid, true);
+
+  // 成功结论中的字段清单同样携带可区分证据
+  const c = sd.conclusion();
+  assert.equal(c.allFields[0].valueHex, '80');
+  assert.equal(c.allFields[1].valueHex, '81');
+  assert.equal(c.allFields[0].valueUtf8Valid, false);
+  assert.equal(c.allFields[1].valueUtf8Valid, false);
+});
