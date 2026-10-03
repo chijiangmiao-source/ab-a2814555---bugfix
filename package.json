@@ -1,0 +1,16 @@
+{
+  "name": "hpack-relay-reviewer",
+  "version": "1.0.0",
+  "description": "星载中继网关 HPACK 连续头块复核台：跨段动态表、字段溯源、插入/驱逐审计与错误定位",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/",
+    "verify": "node verify.js"
+  },
+  "license": "MIT"
+}

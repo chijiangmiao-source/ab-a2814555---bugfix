@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HPACK 中继头块复核台</title>
+<style>
+  :root {
+    --bg: #0b1020; --panel: #131a2e; --panel2: #0f1526; --line: #26314f;
+    --txt: #dfe6f5; --dim: #8d9ab8; --accent: #5aa9ff; --ok: #43d17a;
+    --warn: #ffb454; --bad: #ff6b6b; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 80% -10%, #16233f 0%, var(--bg) 55%);
+    color: var(--txt); font: 14px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header { padding: 20px 28px 12px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 0 4px; font-size: 19px; letter-spacing: .5px; }
+  header p { margin: 0; color: var(--dim); font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 28px 60px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 18px; }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; color: var(--accent); }
+  label { display: block; font-size: 12.5px; color: var(--dim); margin: 10px 0 4px; }
+  .cap-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+  .cap-row .field { flex: 0 0 200px; }
+  input[type=number], textarea {
+    width: 100%; background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
+    border-radius: 7px; padding: 9px 10px; font-family: var(--mono); font-size: 12.5px;
+  }
+  textarea { resize: vertical; min-height: 58px; word-break: break-all; }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  .seg-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .seg-box { position: relative; }
+  .seg-box .tag { position: absolute; top: 8px; right: 10px; font-size: 11px; color: var(--dim); }
+  .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  button {
+    background: #1c2a48; color: var(--txt); border: 1px solid var(--line); border-radius: 7px;
+    padding: 9px 18px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #17406e; border-color: #2d63a3; color: #eaf3ff; font-weight: 600; }
+  button.ghost { background: transparent; }
+  .examples button { padding: 6px 12px; font-size: 12px; color: var(--dim); }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .alert { border-radius: 9px; padding: 14px 16px; margin-bottom: 18px; border: 1px solid; font-size: 13.5px; }
+  .alert.ok { background: rgba(67,209,122,.08); border-color: rgba(67,209,122,.45); }
+  .alert.err { background: rgba(255,107,107,.08); border-color: rgba(255,107,107,.5); }
+  .alert .code { font-family: var(--mono); color: var(--bad); font-weight: 700; }
+  .alert .off { font-family: var(--mono); background: #2a1620; color: #ffd9d9; padding: 1px 7px; border-radius: 5px; }
+  details.block { background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; margin-bottom: 12px; overflow: hidden; }
+  details.block > summary {
+    cursor: pointer; padding: 11px 15px; list-style: none; display: flex; gap: 12px; align-items: center;
+    font-size: 13.5px; user-select: none;
+  }
+  details.block > summary::-webkit-details-marker { display: none; }
+  details.block > summary .n { color: var(--accent); font-weight: 700; min-width: 64px; }
+  details.block > summary .meta { color: var(--dim); font-size: 12px; }
+  .bbody { padding: 4px 15px 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+  th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; }
+  td.mono, .mono { font-family: var(--mono); word-break: break-all; }
+  .pill { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 20px; border: 1px solid var(--line); color: var(--dim); }
+  .pill.static { color: #9fc4ff; } .pill.dynamic { color: #7fe3c0; } .pill.literal { color: #e0c08a; }
+  .pill.kind-indexed { color: #b5c7ff; } .pill.kind-incremental { color: var(--ok); }
+  .pill.kind-none { color: var(--dim); } .pill.kind-never { color: var(--warn); }
+  .pill.huff { color: #d7a8ff; }
+  .events li { font-family: var(--mono); font-size: 12px; margin: 2px 0; }
+  .ev-insert { color: var(--ok); } .ev-evict { color: var(--warn); } .ev-resize { color: var(--accent); }
+  .snap-head { color: var(--dim); font-size: 12px; margin: 12px 0 2px; }
+  .empty { color: var(--dim); font-size: 12.5px; padding: 6px 0; }
+  .concl-grid { display: flex; gap: 22px; flex-wrap: wrap; font-size: 13px; margin-bottom: 8px; }
+  .concl-grid b { font-family: var(--mono); color: var(--ok); }
+  footer { color: var(--dim); font-size: 11.5px; text-align: center; padding: 20px; }
+  @media (max-width: 760px) { .seg-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ 星载中继网关 · HPACK 连续头块复核台</h1>
+  <p>按接收顺序粘贴 1–8 段 Base64 原始 HPACK 块；全部块在<b>同一张动态表</b>上连续解码（RFC 7541）。用于识别压缩上下文错位导致的遥测路由字段误还原。</p>
+</header>
+<main>
+  <section class="panel">
+    <h2>① 解码参数与原始块</h2>
+    <div class="cap-row">
+      <div class="field">
+        <label for="cap">动态表容量协商上限（字节，0–4096）</label>
+        <input id="cap" type="number" min="0" max="4096" step="1" value="4096">
+      </div>
+      <div class="examples">
+        <label>快捷示例（载入后点“开始连续解码”）</label>
+        <div class="btns" style="margin:0">
+          <button type="button" data-ex="cross">跨段引用（验收主线）</button>
+          <button type="button" data-ex="badtail">非法后续块（回滚验收）</button>
+          <button type="button" data-ex="huff">Huffman · RFC C.4.1</button>
+          <button type="button" data-ex="resize">块首容量更新与驱逐</button>
+        </div>
+      </div>
+    </div>
+    <div class="seg-grid" id="segGrid" style="margin-top:12px"></div>
+    <div class="hint">仅接受标准 Base64（A–Z a–z 0–9 + / 与末尾 = 填充）；全部段原始 HPACK 字节合计不超过 64 KiB。</div>
+    <div class="btns">
+      <button class="primary" id="btnDecode">开始连续解码</button>
+      <button id="btnClearDraft">清空草稿</button>
+      <button class="ghost" id="btnClearAll">清空草稿和结论</button>
+    </div>
+  </section>
+
+  <section id="outStatus"></section>
+  <section id="outConclusion"></section>
+  <section id="outBlocks"></section>
+</main>
+<footer>纯本地解码 · 数据不离开本机 · RFC 7541 HPACK（变长整数 / 静态表 / 动态表 / 字面量策略 / Huffman / 容量更新）</footer>
+
+<script>
+'use strict';
+const SEG_COUNT = 8;
+const grid = document.getElementById('segGrid');
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+for (let i = 1; i <= SEG_COUNT; i++) {
+  const box = document.createElement('div');
+  box.className = 'seg-box';
+  box.innerHTML =
+    '<span class="tag">按接收顺序 · 第 ' + i + ' 段</span>' +
+    '<label for="seg' + i + '">第 ' + i + ' 段 Base64（可留空）</label>' +
+    '<textarea id="seg' + i + '" spellcheck="false" autocomplete="off" placeholder="例如：gYQByZv2..."></textarea>';
+  grid.appendChild(box);
+}
+
+const EXAMPLES = {
+  // 段1 增量插入 x-telemetry-route: sat-a/tm/7（Huffman 值），段2 用动态索引 62 引用
+  cross: ['QBF4LXRlbGVtZXRyeS1yb3V0ZYdA0rDYTSw7', 'vg=='],
+  // 段1 合法插入；段2 先插临时项 xx 再引用越界索引 64 -> 失败回滚，段1 快照保留
+  badtail: ['QBF4LXRlbGVtZXRyeS1yb3V0ZYdA0rDYTSw7', 'QAJ4eAF4wA=='],
+  huff: ['goaEQYzx48Ll8jproKuQ9P8='],
+  resize: ['P8UA', 'QAFBAUI='], // 段1 容量 100；段2 插入 A=B
+};
+
+document.querySelectorAll('[data-ex]').forEach((b) => {
+  b.addEventListener('click', () => {
+    const ex = EXAMPLES[b.dataset.ex] || [];
+    for (let i = 1; i <= SEG_COUNT; i++) document.getElementById('seg' + i).value = ex[i - 1] || '';
+    document.getElementById('cap').value = b.dataset.ex === 'resize' ? '4096' : '4096';
+    clearResults();
+  });
+});
+
+const $status = document.getElementById('outStatus');
+const $blocks = document.getElementById('outBlocks');
+const $concl = document.getElementById('outConclusion');
+
+function clearResults() { $status.innerHTML = ''; $blocks.innerHTML = ''; $concl.innerHTML = ''; }
+
+document.getElementById('btnClearDraft').addEventListener('click', () => {
+  for (let i = 1; i <= SEG_COUNT; i++) document.getElementById('seg' + i).value = '';
+  document.getElementById('cap').value = '4096';
+});
+document.getElementById('btnClearAll').addEventListener('click', () => {
+  document.getElementById('btnClearDraft').click();
+  clearResults();
+});
+
+const KIND_LABEL = { indexed: '索引', incremental: '增量索引', none: '不索引', never: '绝不索引' };
+function sourcePill(src) {
+  if (!src) return '';
+  if (src.location === 'literal') return '<span class="pill literal">字面量名</span>';
+  return '<span class="pill ' + src.location + '">' +
+    (src.location === 'static' ? '静态表' : '动态表') + ' #' + src.index + '</span>';
+}
+function huffPill(v) {
+  if (v === null) return '';
+  return '<span class="pill huff">' + (v ? 'Huffman' : '原文') + '</span>';
+}
+
+function cellWithHex(text, hex, validUtf8) {
+  const warn = validUtf8 === false
+    ? ' <span class="pill huff" title="原始字节不是合法 UTF-8，以下文本为替换显示；hex: ' + esc(hex) + '">⚠ 非UTF-8</span>'
+    : '';
+  return '<td class="mono">' + esc(text) + warn + '</td>';
+}
+
+function renderFields(fields) {
+  if (!fields || !fields.length) return '<div class="empty">本段无字段</div>';
+  let html = '<table><thead><tr><th>偏移</th><th>类型</th><th>字段名</th><th>字段值</th><th>名称来源</th><th>编码</th></tr></thead><tbody>';
+  for (const f of fields) {
+    html += '<tr>' +
+      '<td class="mono">0x' + f.offset.toString(16) + '</td>' +
+      '<td><span class="pill kind-' + f.kind + '">' + KIND_LABEL[f.kind] + '</span></td>' +
+      cellWithHex(f.name, f.nameHex, f.nameUtf8Valid) +
+      cellWithHex(f.value, f.valueHex, f.valueUtf8Valid) +
+      '<td>' + sourcePill(f.source) + '</td>' +
+      '<td>' + huffPill(f.nameHuffman) + ' ' + huffPill(f.valueHuffman) + '</td>' +
+      '</tr>';
+  }
+  return html + '</tbody></table>';
+}
+
+function renderEvents(events) {
+  if (!events || !events.length) return '<div class="empty">无插入 / 驱逐 / 容量变更</div>';
+  return '<ul class="events" style="padding-left:18px;margin:6px 0">' + events.map((e) => {
+    if (e.type === 'insert')
+      return '<li class="ev-insert">⬆ 插入 @0x' + e.offset.toString(16) + ' → 动态表#' + e.index +
+        ' · <b>' + esc(e.name) + '</b>: ' + esc(e.value) + ' (' + e.entrySize + ' B)</li>';
+    if (e.type === 'eviction')
+      return '<li class="ev-evict">␡ 驱逐（' + (e.cause === 'resize' ? '容量收缩' : '为新条目腾位') +
+        '）动态表#' + e.index + ' · ' + esc(e.name) + ' (' + e.entrySize + ' B)</li>';
+    return '<li class="ev-resize">⚙ 容量更新 @0x' + e.offset.toString(16) + '：' + e.from + ' → ' + e.to + ' B</li>';
+  }).join('') + '</ul>';
+}
+
+function renderSnapshot(snap) {
+  const head = '<div class="snap-head">段末动态表快照：容量上限 <span class="mono">' + snap.maxSize +
+    '</span> B · 当前占用 <span class="mono">' + snap.size + '</span> B · 累计插入 <span class="mono">' +
+    snap.insertCount + '</span> · 存活条目 <span class="mono">' + snap.entries.length + '</span></div>';
+  if (!snap.entries.length) return head + '<div class="empty">（动态表为空）</div>';
+  let html = head + '<table><thead><tr><th>索引</th><th>字段名</th><th>字段值</th><th>尺寸</th></tr></thead><tbody>';
+  for (const e of snap.entries) {
+    html += '<tr><td class="mono">#' + e.index + '</td><td class="mono">' + esc(e.name) +
+      '</td><td class="mono">' + esc(e.value) + '</td><td>' + e.entrySize + ' B</td></tr>';
+  }
+  return html + '</tbody></table>';
+}
+
+function renderBlock(r, failed) {
+  const d = document.createElement('details');
+  d.className = 'block';
+  d.open = true;
+  const label = failed ? '⛔ 失败块（未提交）' : '✅ 已提交';
+  const slotNo = r.slot || r.block;
+  d.innerHTML = '<summary><span class="n">第 ' + slotNo + ' 段</span>' +
+    '<span class="meta">' + label + ' · 原始 ' + r.rawLength + ' 字节 · ' +
+    (r.fields ? r.fields.length : 0) + ' 个字段 · ' +
+    (r.events ? r.events.filter((e) => e.type === 'insert').length : 0) + ' 次插入</span></summary>' +
+    '<div class="bbody">' +
+    (r.fields ? '<h3 style="margin:8px 0 2px;font-size:13px">字段与引用来源</h3>' + renderFields(r.fields) : '') +
+    (r.events ? '<h3 style="margin:14px 0 2px;font-size:13px">插入 / 驱逐 / 容量记录</h3>' + renderEvents(r.events) : '') +
+    (r.snapshot ? renderSnapshot(r.snapshot) : '<div class="snap-head">本段失败，动态表保持上一段提交后的快照不变。</div>') +
+    '</div>';
+  return d;
+}
+
+document.getElementById('btnDecode').addEventListener('click', async () => {
+  clearResults();
+  const segments = [];
+  for (let i = 1; i <= SEG_COUNT; i++) segments.push(document.getElementById('seg' + i).value.trim());
+  const capacity = Number(document.getElementById('cap').value);
+  let resp;
+  try {
+    resp = await fetch('/api/decode', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ capacity, segments }),
+    });
+  } catch (e) {
+    $status.innerHTML = '<div class="alert err">网络错误：无法连接解码服务（' + esc(e.message) + '）</div>';
+    return;
+  }
+  const data = await resp.json();
+  if (resp.status !== 200 && resp.status !== 422) {
+    $status.innerHTML = '<div class="alert err">请求被拒绝（HTTP ' + resp.status + '）：<span class="code">' +
+      esc(data.error && data.error.code || 'UNKNOWN') + '</span> — ' + esc(data.error && data.error.message || '') + '</div>';
+    return;
+  }
+
+  if (!data.ok) {
+    const e = data.error;
+    // 验收要求：失败即清除“成功结论”
+    $status.innerHTML = '<div class="alert err">⛔ <b>第 ' + e.block + ' 段解码失败</b>，已在段内字节偏移 ' +
+      '<span class="off">' + e.offsetHex + '（十进制 ' + e.offset + '）</span>' +
+      (e.byte ? '，该字节 <span class="off">' + e.byte + '</span>' : '') +
+      ' 处检出 <span class="code">' + esc(e.code) + '</span>：' + esc(e.message) +
+      '<div class="hint" style="color:#e6b3b3;margin-top:6px">该失败块<b>未提交</b>：此前各段快照原样保留，块内插入/驱逐已全部回滚；不生成成功结论。</div></div>';
+    data.results.forEach((r) => $blocks.appendChild(renderBlock(r, false)));
+    $blocks.appendChild(renderBlock({ block: e.block, rawLength: e.blockLength, fields: null, events: null, snapshot: null }, true));
+    return;
+  }
+
+  const c = data.conclusion;
+  $status.innerHTML = '<div class="alert ok">✅ 全部 ' + data.results.length + ' 段连续解码成功，压缩上下文跨段一致，结论有效。</div>';
+  let rows = c.allFields.map((f) =>
+    '<tr><td>第 ' + f.block + ' 段</td><td class="mono">0x' + f.offset.toString(16) +
+    '</td><td class="mono">' + esc(f.name) + '</td><td class="mono">' + esc(f.value) + '</td></tr>').join('');
+  if (!rows) rows = '<tr><td colspan="4" class="empty">所有段均为空块，无还原字段</td></tr>';
+  $concl.innerHTML = '<section class="panel"><h2>② 成功结论（全部段字段按接收顺序还原）</h2>' +
+    '<div class="concl-grid"><span>成功段数：<b>' + c.blocks + '</b></span>' +
+    '<span>字段总数：<b>' + c.totalFields + '</b></span>' +
+    '<span>原始字节：<b>' + c.totalBytes + '</b> / 65536</span>' +
+    '<span>表终态占用：<b>' + c.finalSnapshot.size + '</b> / ' + c.finalSnapshot.maxSize + ' B</span></div>' +
+    '<table><thead><tr><th>所属段</th><th>段内偏移</th><th>字段名</th><th>字段值</th></tr></thead><tbody>' +
+    rows + '</tbody></table></section>';
+  data.results.forEach((r) => $blocks.appendChild(renderBlock(r, false)));
+});
+</script>
+</body>
+</html>

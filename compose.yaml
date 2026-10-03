@@ -1,0 +1,33 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hpack-relay-reviewer:latest
+    environment:
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+    restart: unless-stopped
+
+  # 验收入口：docker compose run --rm verify
+  # 执行连续解码规则代码测试、页面构建检查，并对 app 服务的页面/健康路径/API 冒烟，
+  # 完成后退出并以退出码报告结果（0=通过，非 0=失败）。
+  verify:
+    image: hpack-relay-reviewer:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      TARGET_URL: "http://app:8080"
+    command: ["node", "verify.js"]
+    restart: "no"
